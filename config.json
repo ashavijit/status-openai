@@ -1,0 +1,6 @@
+{
+    "check_interval": 60,
+    "feeds": {
+        "OpenAI": "https://status.openai.com/history.rss"
+    }
+}
