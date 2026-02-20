@@ -1,5 +1,6 @@
 import json
 import time
+import requests
 import feedparser
 from datetime import datetime
 from bs4 import BeautifulSoup
@@ -15,7 +16,6 @@ def load_config(path=CONFIG_FILE):
 
 def clean_html(html_text):
     soup = BeautifulSoup(html_text, "html.parser")
-
     text = soup.get_text(separator="\n")
 
     lines = [
@@ -28,6 +28,7 @@ def clean_html(html_text):
 
 
 def format_status(summary_html):
+
     lines = clean_html(summary_html)
 
     status = "Unknown"
@@ -57,93 +58,99 @@ def format_status(summary_html):
     return status, message, components
 
 
+CACHE = {}
+SEEN = set()
 
-class StatusListener:
 
-    def __init__(self, feeds, interval=60):
-        self.feeds = feeds
-        self.interval = interval
-        self.seen = set()
+def fetch_provider(provider, url):
 
-    def fetch_provider(self, provider, url):
+    headers = {}
 
-        feed = feedparser.parse(url)
+    if url in CACHE:
 
-        if feed.bozo:
-            print(f"[WARN] Invalid feed: {provider}")
-            return
+        if CACHE[url].get("etag"):
+            headers["If-None-Match"] = CACHE[url]["etag"]
 
-        for entry in feed.entries:
+        if CACHE[url].get("last_modified"):
+            headers["If-Modified-Since"] = CACHE[url]["last_modified"]
 
-            uid = entry.get("id", entry.get("link"))
+    try:
+        response = requests.get(url, headers=headers, timeout=15)
+    except Exception as e:
+        print(f"[ERROR] {provider} request failed:", e)
+        return
 
-            if not uid or uid in self.seen:
-                continue
+    if response.status_code == 304:
+        return
 
-            self.seen.add(uid)
+    CACHE[url] = {
+        "etag": response.headers.get("ETag"),
+        "last_modified": response.headers.get("Last-Modified")
+    }
 
-            timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    feed = feedparser.parse(response.content)
 
-            title = entry.get("title", "Unknown Product")
-            summary = entry.get("summary", "")
+    if feed.bozo:
+        print(f"[WARN] Invalid feed: {provider}")
+        return
 
-            status, message, components = format_status(summary)
+    for entry in feed.entries:
 
-            self.print_event(
-                timestamp,
-                provider,
-                title,
-                status,
-                message,
-                components
-            )
+        uid = entry.get("id", entry.get("link"))
 
-    def print_event(
-        self,
-        timestamp,
-        provider,
-        product,
-        status,
-        message,
-        components
-    ):
+        if not uid or uid in SEEN:
+            continue
 
-        print(f"\n[{timestamp}] Provider: {provider}")
-        print(f"Product: {product}")
-        print(f"Status: {status}")
+        SEEN.add(uid)
 
-        if message:
-            print("\nDetails:")
-            for line in message:
-                print(f"  - {line}")
+        print_entry(provider, entry)
 
-        if components:
-            print("\nAffected Services:")
-            for comp in components:
-                print(f"  - {comp}")
 
-        print("-" * 60)
+def print_entry(provider, entry):
 
-    def start(self):
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
-        print("Status Listener Started\n")
+    title = entry.get("title", "Unknown Product")
+    summary = entry.get("summary", "")
 
-        while True:
+    status, message, components = format_status(summary)
 
-            try:
-                for provider, url in self.feeds.items():
-                    self.fetch_provider(provider, url)
+    print(f"\n[{timestamp}] Provider: {provider}")
+    print(f"Product: {title}")
+    print(f"Status: {status}")
 
-                time.sleep(self.interval)
+    if message:
+        print("\nDetails:")
+        for line in message:
+            print(f"  - {line}")
 
-            except KeyboardInterrupt:
-                print("\nStopped.")
-                break
+    if components:
+        print("\nAffected Services:")
+        for comp in components:
+            print(f"  - {comp}")
 
-            except Exception as e:
-                print("[ERROR]", e)
-                time.sleep(30)
+    print("-" * 60)
 
+
+def start_listener(feeds, interval):
+
+    print("Status Listener Started\n")
+
+    while True:
+
+        try:
+            for provider, url in feeds.items():
+                fetch_provider(provider, url)
+
+            time.sleep(interval)
+
+        except KeyboardInterrupt:
+            print("\nStopped.")
+            break
+
+        except Exception as e:
+            print("[ERROR]", e)
+            time.sleep(30)
 
 
 def main():
@@ -157,8 +164,7 @@ def main():
         print("No feeds configured.")
         return
 
-    listener = StatusListener(feeds, interval)
-    listener.start()
+    start_listener(feeds, interval)
 
 
 if __name__ == "__main__":
