@@ -1,6 +1,6 @@
 # status-openai
 
-Monitor status feeds with ETag support.
+Monitor status feeds with ETag support
 
 ## Installation
 
